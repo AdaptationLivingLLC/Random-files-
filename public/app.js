@@ -1,32 +1,16 @@
-import { b64, wordCount, decrypt, writePayload, readPayload } from './codec.js';
-import { newDescriptor, parseDescriptor, sealVeil, prepareVeil, openVeil, validateVeil, encode64, decode64 } from './veil.js';
-const $ = id => document.getElementById(id);
-let theme = 'gallery', authenticated = false, sealing = false, epoch = 0;
-let downloadURL = null, coverBitmap = null, artSeed = Math.random();
+import { wordCount, decrypt, readPayload } from './codec.js';
+import { prepareVeil, openVeil, validateVeil, encode64, decode64 } from './veil.js';
+import { $, standalone, ui, notify, api, imageFrom, loadKey, initTheme } from './common.js';
+let authenticated = false, epoch = 0, decoderDescriptor = null, prepared = null, openingPassphrase = '', decryptedFileURL = null;
 let sourceDirectory = null, sourceName = null, sourceDigest = null, pendingDirectory = null, fileEraseTimer = null;
-const watermark = [...crypto.getRandomValues(new Uint8Array(3))].map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
-let mode = 'timed', encoderDescriptor = null, decoderDescriptor = null, secretFile = null, prepared = null, openingPassphrase = '', decryptedFileURL = null;
-const standalone = document.body.dataset.standalone === 'true';
 let payload = null, readable = null, held = false, opening = false, opened = false;
-let pointer = { x: 0, y: 0 }, deadline = 0, animation = null, lastActivity = performance.now(), notification;
-const surfaces = ['home', 'studio', 'collection'];
-function notify(text) { $('toast').textContent = text; $('toast').hidden = false; clearTimeout(notification); notification = setTimeout(() => { $('toast').hidden = true; $('toast').textContent = ''; }, 6000); }
-async function api(path, data, keepalive = false) {
-  const response = await fetch('/api/' + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data), credentials: 'same-origin', cache: 'no-store', keepalive });
-  const value = await response.json(); if (!response.ok) { if (response.status === 401) { authenticated = false; $('login').hidden = false; $('reader').hidden = true; } throw new Error(value.error || 'Unable to complete this action.'); }
-  return value;
-}
-function count() { const words = wordCount($('message').value); $('word-count').textContent = `${words} WORD${words === 1 ? '' : 'S'}`; $('duration').textContent = `${Math.ceil(words / 5) * 2} SECONDS TO READ`; }
+let pointer = {x:0,y:0}, deadline = 0, animation = null, lastActivity = performance.now();
+const watermark = [...crypto.getRandomValues(new Uint8Array(3))].map(b => b.toString(16).padStart(2,'0')).join('').toUpperCase();
 function show(section) {
-  if (section !== 'studio') clearComposer();
   if (section !== 'collection') clearReader();
-  surfaces.forEach(id => { $(id).hidden = id !== section; });
-  if (!standalone) history.replaceState(null, '', ({ home: '/', studio: '/studio', collection: '/collection' })[section]); window.scrollTo(0, 0); lastActivity = performance.now();
-}
-function clearComposer() {
-  $('message').value = ''; $('message').disabled = false; $('message').hidden = false; $('seal').hidden = false; $('sealed').hidden = true;
-  $('seal-passphrase').value = ''; secretFile = null; $('secret-file').value = ''; $('secret-file-status').textContent = 'Optional · up to 12 MB'; $('text-only').hidden = true;
-  $('download').removeAttribute('href'); if (downloadURL) URL.revokeObjectURL(downloadURL); downloadURL = null; count();
+  for (const id of ['home','collection']) $(id).hidden = id !== section;
+  if (!standalone) history.replaceState(null,'',section === 'collection' ? '/collection' : '/');
+  window.scrollTo(0,0); lastActivity = performance.now();
 }
 function blank() {
   const canvas = $('reveal-canvas'), ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -49,113 +33,10 @@ function endReading(label = 'THIS MOMENT HAS PASSED') {
 }
 function logout() {
   const wasAuthenticated = authenticated;
-  encoderDescriptor?.fill(0); encoderDescriptor = null; $('encoder-key-status').textContent = 'REQUIRED'; $('encoder-key-upload').value = '';
-  epoch++; clearComposer(); clearReader(); authenticated = false; $('password').value = '';
-  $('login').hidden = standalone; $('reader').hidden = false; coverBitmap?.close(); coverBitmap = null;
-  $('cover-upload').value = ''; drawArt($('cover')); show('home');
-  if (wasAuthenticated && !standalone) api('logout', {}, true).catch(() => {});
+  clearReader(); authenticated = false; $('password').value = ''; $('login').hidden = standalone; show('home');
+  if (wasAuthenticated && !standalone) api('logout',{},true).catch(() => {});
 }
-function drawArt(canvas) {
-  const c = canvas.getContext('2d'), w = canvas.width, h = canvas.height;
-  const t = artSeed;
-  const sky = c.createLinearGradient(0, 0, 0, h); sky.addColorStop(0, '#506c74'); sky.addColorStop(.48, '#c6b493'); sky.addColorStop(1, '#ebe0c4'); c.fillStyle = sky; c.fillRect(0, 0, w, h);
-  const sunX = w * (.3 + t * .3), sunY = h * .25;
-  const halo = c.createRadialGradient(sunX, sunY, 20, sunX, sunY, w * .38); halo.addColorStop(0, '#f4eacbbb'); halo.addColorStop(1, '#f4eacb00'); c.fillStyle = halo; c.fillRect(0, 0, w, h);
-  c.fillStyle = '#f1d5a4'; c.beginPath(); c.arc(sunX, sunY, w * .095, 0, Math.PI * 2); c.fill();
-  for (let layer = 0; layer < 5; layer++) {
-    const y = h * (.48 + layer * .115); c.beginPath(); c.moveTo(0, h);
-    c.lineTo(0, y); for (let x = 0; x <= w + 20; x += 20) c.lineTo(x, y + Math.sin(x / w * 4 + layer * .9 + t * 4) * h * .07 + Math.cos(x / w * 8 + layer) * h * .018);
-    c.lineTo(w, h); c.closePath(); c.fillStyle = ['#657d7b', '#3e6265', '#264b50', '#163b42', '#102e35'][layer]; c.fill();
-  }
-  let s = Math.floor(t * 999999) || 1; c.globalAlpha = .055;
-  for (let i = 0; i < 17000; i++) { s = (s * 16807) % 2147483647; const x = s % w; s = (s * 16807) % 2147483647; c.fillStyle = i % 2 ? '#fff' : '#000'; c.fillRect(x, s % h, 1, 1); }
-  c.globalAlpha = 1;
-}
-function paintCover() {
-  if (!coverBitmap) return drawArt($('cover'));
-  const canvas = $('cover'), c = canvas.getContext('2d'); const factor = Math.max(canvas.width / coverBitmap.width, canvas.height / coverBitmap.height);
-  c.fillStyle = '#f3f0e8'; c.fillRect(0, 0, canvas.width, canvas.height);
-  c.drawImage(coverBitmap, (canvas.width - coverBitmap.width * factor) / 2, (canvas.height - coverBitmap.height * factor) / 2, coverBitmap.width * factor, coverBitmap.height * factor);
-}
-async function imageFrom(file, pngOnly = false) {
-  if (!file || file.size > 15000000) throw new Error('Choose an image smaller than 15 MB.');
-  if (pngOnly) { const sig = new Uint8Array(await file.slice(0, 8).arrayBuffer()); if (sig.join(',') !== '137,80,78,71,13,10,26,10') throw new Error('Choose the original PNG file.'); }
-  const bitmap = await createImageBitmap(file, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
-  if (bitmap.width * bitmap.height > 20000000) { bitmap.close(); throw new Error('Choose an image under 20 megapixels.'); }
-  return bitmap;
-}
-$('theme-switch').addEventListener('click', () => {
-  theme = theme === 'gallery' ? 'terminal' : 'gallery'; document.body.classList.toggle('terminal', theme === 'terminal');
-  $('footer-mode').textContent = theme === 'terminal' ? 'SIGNAL ACTIVE / EPHEMERAL CHANNEL' : 'A DIFFERENT KIND OF CORRESPONDENCE.';
-});
-$('studio-link').onclick = $('start').onclick = () => show('studio');
-$('collection-link').onclick = () => show('collection');
-$('compose-again').onclick = clearComposer;
-$('message').oninput = count;
-$('new-art').onclick = () => { coverBitmap?.close(); coverBitmap = null; artSeed = Math.random(); paintCover(); };
-$('cover-upload').onchange = async event => {
-  const version = epoch;
-  try { const image = await imageFrom(event.target.files[0]); if (version !== epoch) { image.close(); return; } coverBitmap?.close(); coverBitmap = image; paintCover(); }
-  catch (error) { notify(error.message); } finally { event.target.value = ''; }
-};
-function selectMode(next) {
-  mode = next; $('mode-timed').classList.toggle('selected', mode === 'timed'); $('mode-offline').classList.toggle('selected', mode === 'offline');
-  $('file-compose').hidden = mode !== 'offline'; $('retention-label').textContent = mode === 'timed' ? 'UNOPENED CARDS EXPIRE IN 24 HOURS' : 'OFFLINE / NO SERVER ACCESS REQUIRED';
-  $('mode-description').textContent = mode === 'timed' ? 'Key file + passphrase + one-time server access. The first reveal consumes access.' : 'Key file + passphrase. No content or encryption material is uploaded. The viewer clears automatically; retained copies can be reopened.';
-  if (mode === 'timed') { secretFile = null; $('secret-file').value = ''; $('message').disabled = false; $('text-only').hidden = true; }
-}
-$('mode-timed').onclick = () => selectMode('timed'); $('mode-offline').onclick = () => selectMode('offline');
-async function loadKey(file) { if (!file || file.size > 4096) throw new Error('Choose a small .vkey descriptor file.'); return parseDescriptor(JSON.parse(await file.text())); }
-$('generate-key').onclick = async () => {
-  const version = epoch;
-  try { const generated = await newDescriptor(); if (version !== epoch) { generated.key.fill(0); return; } encoderDescriptor?.fill(0); encoderDescriptor = generated.key;
-    const url = URL.createObjectURL(new Blob([JSON.stringify(generated.file)], { type: 'application/json' }));
-    const a = document.createElement('a'); a.href = url; a.download = 'conversation-' + generated.file.fingerprint.slice(0, 8) + '.vkey'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-    $('encoder-key-status').textContent = generated.file.fingerprint.slice(0, 8).toUpperCase(); notify('Key file generated. Keep it separate from your encrypted card.');
-  } catch (error) { notify(error.message); }
-};
-$('encoder-key-upload').onchange = async event => { const version = epoch; try { const key = await loadKey(event.target.files[0]); if (version !== epoch) { key.fill(0); return; } encoderDescriptor?.fill(0); encoderDescriptor = key; $('encoder-key-status').textContent = 'KEY READY'; } catch (error) { notify(error.message); } finally { event.target.value = ''; } };
-$('secret-file').onchange = event => { const file = event.target.files[0]; if (!file) return; if (file.size > 12000000) return notify('Choose a file smaller than 12 MB.'); secretFile = file; $('secret-file-status').textContent = file.name; $('text-only').hidden = false; $('message').value = ''; $('message').disabled = true; $('output-format').value = 'veil'; count(); };
-$('text-only').onclick = () => { secretFile = null; $('secret-file').value = ''; $('secret-file-status').textContent = 'Optional · up to 12 MB'; $('text-only').hidden = true; $('message').disabled = false; };
-$('seal').onclick = async () => {
-  if (sealing) return;
-  const words = wordCount($('message').value), selectedMode = mode;
-  if (!encoderDescriptor) return notify('Generate or choose your conversation key file first.');
-  if (!secretFile && (words < 1 || words > 500)) return notify('Write between 1 and 500 words.');
-  if (!crypto.subtle) return notify('Use HTTPS or open the offline application locally.');
-  const version = epoch; sealing = true; $('seal').disabled = true; $('message').disabled = true;
-  const descriptor = new Uint8Array(encoderDescriptor); let encrypted, fileBytes;
-  try {
-    let content;
-    if (secretFile) { fileBytes = new Uint8Array(await secretFile.arrayBuffer()); content = { kind: 'file', name: secretFile.name, mime: secretFile.type || 'application/octet-stream', data: encode64(fileBytes) }; }
-    else content = { kind: 'text', text: $('message').value, duration: Math.ceil(words / 5) * 2000 };
-    encrypted = await sealVeil(content, descriptor, $('seal-passphrase').value, selectedMode); fileBytes?.fill(0); content = null;
-    if (version !== epoch) return;
-    const envelope = encrypted.envelope;
-    // Generate output before requesting server retention, so a capacity error never consumes or saves access.
-    const output = document.createElement('canvas'); let blob;
-    if ($('output-format').value === 'png') {
-      const canvas = $('cover'), c = canvas.getContext('2d');
-      // Reserve the fixed-size message ID before embedding; no secret goes into the carrier.
-      if (selectedMode === 'timed') envelope.id = 'a'.repeat(32);
-      writePayload(c.getImageData(0, 0, canvas.width, canvas.height), envelope);
-    }
-    if (selectedMode === 'timed') { const result = await api('seal', { key: encode64(encrypted.secret), words }); envelope.id = result.id; encrypted.secret.fill(0); }
-    if (version !== epoch) return;
-    const png = $('output-format').value === 'png';
-    if (png) {
-      const canvas = $('cover'), image = writePayload(canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height), envelope);
-      output.width = canvas.width; output.height = canvas.height; output.getContext('2d').putImageData(image, 0, 0);
-      blob = await new Promise(resolve => output.toBlob(resolve, 'image/png')); output.width = output.height = 1;
-    } else blob = new Blob([JSON.stringify(envelope)], { type: 'application/vnd.veildrop+json' });
-    if (!blob) throw new Error('The encrypted package could not be generated.');
-    if (version !== epoch) return;
-    $('message').value = ''; $('seal-passphrase').value = ''; secretFile = null; $('secret-file').value = ''; $('message').hidden = true; $('seal').hidden = true; $('sealed').hidden = false; count();
-    if (downloadURL) URL.revokeObjectURL(downloadURL); downloadURL = URL.createObjectURL(blob); $('download').href = downloadURL; $('download').download = png ? 'veildrop-card.png' : 'veildrop-message.veil'; $('download').textContent = png ? 'Download encrypted PNG ↓' : 'Download encrypted package ↓';
-    notify('Sealed. Original input cleared. Key file and passphrase are required to open it.');
-  } catch (error) { notify(error.message); }
-  finally { descriptor.fill(0); fileBytes?.fill(0); encrypted?.secret?.fill(0); sealing = false; $('seal').disabled = false; if (!$('message').hidden && !secretFile) $('message').disabled = false; }
-};
+$('collection-link').onclick = $('start').onclick = () => show('collection');
 $('login').onsubmit = async event => {
   event.preventDefault(); const version = epoch; const button = $('login').querySelector('button'); button.disabled = true;
   try { await api('login', { password: $('password').value }); $('password').value = ''; if (version !== epoch) { if (!standalone) api('logout', {}, true).catch(() => {}); return; }
@@ -247,7 +128,7 @@ function linesFor(ctx, text, width) {
 function drawReveal() {
   if (!readable) return;
   const surface = $('reveal-surface'), canvas = $('reveal-canvas');
-  const w = surface.clientWidth, scale = Math.min(devicePixelRatio || 1, 2), font = theme === 'terminal' ? '18px monospace' : '20px Georgia';
+  const w = surface.clientWidth, scale = Math.min(devicePixelRatio || 1, 2), font = ui.theme === 'terminal' ? '18px monospace' : '20px Georgia';
   let c = canvas.getContext('2d'); c.font = font; const lines = linesFor(c, readable.text, w - 56);
   const h = Math.max(420, lines.length * 30 + 80); surface.style.height = h + 'px';
   const pixelW = Math.round(w * scale), pixelH = Math.round(h * scale);
@@ -255,11 +136,11 @@ function drawReveal() {
   c = canvas.getContext('2d'); c.setTransform(scale, 0, 0, scale, 0, 0); c.clearRect(0, 0, w, h);
   if (!held) return;
   c.save(); c.beginPath(); c.arc(pointer.x, pointer.y, 62, 0, 2 * Math.PI); c.clip();
-  c.fillStyle = theme === 'terminal' ? '#071016' : '#f3f0e8'; c.fillRect(0, 0, w, h);
-  c.fillStyle = theme === 'terminal' ? '#dcf5ed' : '#242520'; c.font = font; c.textBaseline = 'top';
+  c.fillStyle = ui.theme === 'terminal' ? '#071016' : '#f3f0e8'; c.fillRect(0, 0, w, h);
+  c.fillStyle = ui.theme === 'terminal' ? '#dcf5ed' : '#242520'; c.font = font; c.textBaseline = 'top';
   lines.forEach((line, i) => c.fillText(line, 28, 40 + i * 30));
-  c.save(); c.globalAlpha = .15; c.fillStyle = theme === 'terminal' ? '#36d8ff' : '#242520'; c.translate(pointer.x, pointer.y); c.rotate(-Math.PI / 7); c.font = '10px monospace'; c.fillText('VEILDROP / ' + watermark, -50, 22); c.restore(); c.restore();
-  c.strokeStyle = theme === 'terminal' ? '#36d8ff' : '#77776b'; c.lineWidth = 1; c.beginPath(); c.arc(pointer.x, pointer.y, 62, 0, 2 * Math.PI); c.stroke();
+  c.save(); c.globalAlpha = .15; c.fillStyle = ui.theme === 'terminal' ? '#36d8ff' : '#242520'; c.translate(pointer.x, pointer.y); c.rotate(-Math.PI / 7); c.font = '10px monospace'; c.fillText('VEILDROP / ' + watermark, -50, 22); c.restore(); c.restore();
+  c.strokeStyle = ui.theme === 'terminal' ? '#36d8ff' : '#77776b'; c.lineWidth = 1; c.beginPath(); c.arc(pointer.x, pointer.y, 62, 0, 2 * Math.PI); c.stroke();
 }
 function tick() {
   if (!readable) return;
@@ -303,20 +184,17 @@ surface.onkeydown = event => { if (event.code === 'Space' || event.code === 'Ent
 surface.onkeyup = event => { if (event.code === 'Space' || event.code === 'Enter') release(); };
 surface.onblur = release;
 document.querySelectorAll('.exit').forEach(button => button.onclick = logout);
-for (const event of ['pointerdown', 'keydown', 'input']) document.addEventListener(event, () => { lastActivity = performance.now(); }, { passive: true });
-setInterval(() => { if (performance.now() - lastActivity >= 120000 && (!$('home').hidden ? authenticated : true)) { logout(); notify('Session cleared after inactivity.'); } }, 1000);
-setInterval(() => { if (authenticated && performance.now() - lastActivity < 120000) api('heartbeat', {}).catch(() => { logout(); }); }, 45000);
+for (const event of ['pointerdown','keydown','input']) document.addEventListener(event, () => { lastActivity = performance.now(); }, {passive:true});
+setInterval(() => { if ((!$('collection').hidden || authenticated) && performance.now()-lastActivity >= 120000) { logout(); notify('Session cleared after inactivity.'); } },1000);
+setInterval(() => { if (authenticated && !standalone && performance.now()-lastActivity < 120000) api('heartbeat',{}).catch(logout); },45000);
+document.addEventListener('session-ended', () => { authenticated = false; $('login').hidden = standalone; clearReader(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) logout(); });
-window.addEventListener('pagehide', () => { clearComposer(); clearReader(); $('password').value = ''; encoderDescriptor?.fill(0); encoderDescriptor = null; if (authenticated && !standalone) navigator.sendBeacon('/api/logout', new Blob(['{}'], { type: 'application/json' })); });
+window.addEventListener('pagehide', () => { const active = authenticated; clearReader(); $('password').value = ''; if (active && !standalone) navigator.sendBeacon('/api/logout',new Blob(['{}'],{type:'application/json'})); });
 window.addEventListener('pageshow', event => { if (event.persisted) logout(); });
-window.addEventListener('blur', release);
+window.addEventListener('blur',release);
 window.addEventListener('beforeprint', () => { if (readable) endReading('CLEARED'); });
-document.addEventListener('copy', event => { if (!$('reveal-panel').hidden) { event.preventDefault(); event.clipboardData?.setData('text/plain', ''); } });
+document.addEventListener('copy', event => { if (!$('reveal-panel').hidden) { event.preventDefault(); event.clipboardData?.setData('text/plain',''); } });
 document.addEventListener('keydown', event => { if (event.key === 'PrintScreen' && readable) endReading('CLEARED'); });
 window.addEventListener('resize', () => { if (readable) drawReveal(); });
-drawArt($('hero-canvas')); paintCover();
-if (standalone) { selectMode('offline'); $('mode-timed').hidden = true; $('login').hidden = true; }
 document.querySelector('.wordmark').onclick = event => { event.preventDefault(); show('home'); };
-if (document.body.dataset.site === 'decoder') { $('studio-link').hidden = true; $('start').hidden = true; }
-if (document.body.dataset.site === 'encoder') $('collection-link').hidden = true;
-show(document.body.dataset.site === 'decoder' ? 'collection' : location.pathname === '/collection' ? 'collection' : location.pathname === '/studio' ? 'studio' : 'home');
+initTheme(); $('login').hidden = standalone; show('collection');
