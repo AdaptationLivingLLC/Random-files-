@@ -43,3 +43,38 @@ export async function decrypt(payload, encodedKey) {
     try { return JSON.parse(decoder.decode(plain)); } finally { plain.fill(0); }
   } finally { bytes.fill(0); }
 }
+
+// Encrypted bytes are carried by Unicode variation selectors after the visible emoji.
+const emojiMagic = [86,69,73,76,69,77,79,74,73,2];
+const emojiSelector = n => String.fromCodePoint(n < 16 ? 0xfe00 + n : 0xe0100 + n - 16);
+const emojiMarker = emojiMagic.map(emojiSelector).join('');
+export function encodeEmoji(envelope, carrier = '🙂') {
+  if (typeof carrier !== 'string' || !carrier.trim() || [...carrier].length > 32 || !/\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3/u.test(carrier)) throw new Error('Choose an emoji from the bank or your emoji keyboard.');
+  const bytes = new TextEncoder().encode(JSON.stringify(envelope));
+  if (!bytes.length || bytes.length > 65536) throw new Error('This message is too large for an emoji. Choose a .veil package.');
+  const framed = new Uint8Array(bytes.length + 4);
+  new DataView(framed.buffer).setUint32(0, bytes.length); framed.set(bytes, 4);
+  return carrier.trim() + emojiMarker + Array.from(framed, emojiSelector).join('');
+}
+export function decodeEmoji(text) {
+  if (typeof text !== 'string' || text.length > 200000) throw new Error('Paste one encrypted emoji.');
+  const start = text.indexOf(emojiMarker);
+  if (start < 0) throw new Error('No hidden message found. Paste the copied emoji text, not a screenshot or a retyped emoji.');
+  if (text.indexOf(emojiMarker, start + emojiMarker.length) >= 0) throw new Error('Paste only one encrypted emoji at a time.');
+  const bytes = [];
+  for (const ch of text.slice(start + emojiMarker.length)) {
+    const cp = ch.codePointAt(0);
+    if (cp >= 0xfe00 && cp <= 0xfe0f) bytes.push(cp - 0xfe00);
+    else if (cp >= 0xe0100 && cp <= 0xe01ef) bytes.push(cp - 0xe0100 + 16);
+    else break;
+    if (bytes.length > 65540) throw new Error('The emoji message is too large.');
+  }
+  if (bytes.length < 4) throw new Error('The hidden message is incomplete. Copy the original emoji again.');
+  const data = Uint8Array.from(bytes), size = new DataView(data.buffer).getUint32(0);
+  if (!size || size > 65536 || data.length < size + 4) throw new Error('The hidden message is incomplete. This app may have removed hidden characters.');
+  try {
+    const envelope = JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(data.subarray(4, size + 4)));
+    if (envelope.format !== 'VeilDrop' || envelope.version !== 2) throw new Error();
+    return envelope;
+  } catch { throw new Error('The hidden message is damaged or unsupported.'); }
+}

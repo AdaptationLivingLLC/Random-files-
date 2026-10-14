@@ -1,4 +1,4 @@
-import { wordCount, decrypt, readPayload } from './codec.js';
+import { wordCount, decrypt, readPayload, decodeEmoji } from './codec.js';
 import { prepareVeil, openVeil, validateVeil, encode64, decode64 } from './veil.js';
 import { $, standalone, ui, notify, api, imageFrom, loadKey, initTheme } from './common.js';
 let authenticated = false, epoch = 0, decoderDescriptor = null, prepared = null, openingPassphrase = '', decryptedFileURL = null;
@@ -16,6 +16,7 @@ function blank() {
   const canvas = $('reveal-canvas'), ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height);
 }
 function clearReader() {
+  $('emoji-input').value = ''; $('emoji-input-panel').hidden = false;
   clearTimeout(fileEraseTimer); fileEraseTimer = null; sourceDirectory = null; sourceName = null; sourceDigest = null; pendingDirectory = null; $('delete-folder-files').hidden = true; $('delete-source-name').replaceChildren();
   epoch++; prepared?.stretched?.fill(0); prepared = null; decoderDescriptor?.fill(0); decoderDescriptor = null; openingPassphrase = '';
   $('open-passphrase').value = ''; $('decoder-key-upload').value = ''; $('decoder-key-status').textContent = 'Key file required';
@@ -43,19 +44,20 @@ $('login').onsubmit = async event => {
     authenticated = true; lastActivity = performance.now(); $('login').hidden = true; $('reader').hidden = false;
   } catch (error) { $('password').value = ''; notify(error.message); } finally { button.disabled = false; }
 };
-async function loadCard(file, deleteSource = null) {
+async function loadCard(file, deleteSource = null, emojiEnvelope = null) {
   clearReader(); const version = epoch;
   if (deleteSource) { sourceDirectory = deleteSource.directory; sourceName = deleteSource.name; }
   try {
-    if (!file || file.size > 25000000) throw new Error('Choose a PNG or .veil package smaller than 25 MB.');
+    if (!emojiEnvelope && (!file || file.size > 25000000)) throw new Error('Choose a PNG or .veil package smaller than 25 MB.');
     if (deleteSource) sourceDigest = encode64(new Uint8Array(await crypto.subtle.digest('SHA-256', await file.arrayBuffer())));
     let extracted;
-    if (file.name.toLowerCase().endsWith('.veil') || file.type === 'application/json' || file.type === 'application/vnd.veildrop+json') extracted = validateVeil(JSON.parse(await file.text()));
+    if (emojiEnvelope) extracted = validateVeil(emojiEnvelope);
+    else if (file.name.toLowerCase().endsWith('.veil') || file.type === 'application/json' || file.type === 'application/vnd.veildrop+json') extracted = validateVeil(JSON.parse(await file.text()));
     else { const bitmap = await imageFrom(file, true), canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height; canvas.getContext('2d').drawImage(bitmap, 0, 0); bitmap.close(); extracted = readPayload(canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height)); canvas.width = canvas.height = 1; if (extracted.version === 2) validateVeil(extracted); }
     if (version !== epoch) return;
     if (deleteSource && extracted.mode !== 'offline') throw new Error('Source auto-delete is only available for offline vault packages.');
     if (standalone && extracted.mode !== 'offline') throw new Error('Expiring cards must be opened on the online decoder.');
-    payload = extracted; $('dropzone').hidden = true;
+    payload = extracted; $('dropzone').hidden = true; $('emoji-input-panel').hidden = true;
     if (payload.version === 2) {
       $('unlock-panel').hidden = false; $('package-mode').textContent = payload.mode === 'offline' ? 'VAULT / OFFLINE ACCESS' : 'FLEETING / ONE-TIME ACCESS';
       $('unlock-help').textContent = payload.mode === 'offline' ? 'No server is contacted. Text clears when its timer expires. Retained copies can still be reopened with their key file and passphrase.' : 'Enter the daily access code above, then provide the key file and original passphrase. The timer starts only when you hold to reveal.';
@@ -65,6 +67,7 @@ async function loadCard(file, deleteSource = null) {
     $('reader-instruction').querySelector('small').textContent = 'Move your finger. Release to cover. The timer begins on your first hold.';
   } catch (error) { payload = null; sourceDirectory = null; sourceName = null; $('dropzone').hidden = false; notify(error.message); }
 }
+$('load-emoji').onclick = async () => { try { const envelope = decodeEmoji($('emoji-input').value); await loadCard(null, null, envelope); } catch (error) { notify(error.message); } };
 $('card-upload').onchange = event => loadCard(event.target.files[0]);
 $('choose-delete-folder').onclick = async () => {
   if (!window.showDirectoryPicker) return notify('This browser cannot delete source files. Use a supported desktop browser, or delete the original manually.');
