@@ -11,8 +11,9 @@ function identity(req) {
   // Only trust proxy identity when the proxy presents an explicitly configured secret.
   const brokerTrusted = process.env.BROKER_SECRET && equal(req.headers['x-still-broker-secret'], process.env.BROKER_SECRET);
   const trusted = brokerTrusted || process.env.PROXY_SECRET && equal(req.headers['x-still-proxy-secret'], process.env.PROXY_SECRET);
-  const ip = trusted ? req.headers['x-still-client-ip'] : req.socket.remoteAddress;
-  const zone = trusted ? req.headers['x-still-timezone'] : (!production && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(ip) ? process.env.DEV_TIMEZONE || 'America/Phoenix' : null);
+  const onVercel = process.env.VERCEL === '1';
+  const ip = trusted ? req.headers['x-still-client-ip'] : onVercel ? req.headers['x-real-ip'] || req.socket.remoteAddress : req.socket.remoteAddress;
+  const zone = trusted ? req.headers['x-still-timezone'] : process.env.VERCEL === '1' ? req.headers['x-vercel-ip-timezone'] : (!production && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(ip) ? process.env.DEV_TIMEZONE || 'America/Phoenix' : null);
   if (!ip || ip.length > 100) throw new Error('Location unavailable');
   if (zone) new Intl.DateTimeFormat('en-US', { timeZone: zone });
   return { ip, zone };
@@ -22,7 +23,7 @@ async function body(req) {
   let value = ''; for await (const chunk of req) { value += chunk; if (value.length > 8192) throw new Error('Request too large'); }
   return JSON.parse(value || '{}');
 }
-export const server = http.createServer(async (req,res) => {
+export async function handleRequest(req,res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -53,4 +54,5 @@ export const server = http.createServer(async (req,res) => {
     const setCookie=upstream.headers.get('set-cookie'); if(setCookie)res.setHeader('Set-Cookie',setCookie);
     res.writeHead(upstream.status,{'Content-Type':'application/json'});res.end(await upstream.text());
   } catch { reply(res,400,{error:'Unable to complete the request.'}); }
-});
+}
+export const server = http.createServer(handleRequest);

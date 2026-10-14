@@ -6,10 +6,11 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env decoder.mjs",
     "test": "node --test test/*.test.mjs",
-    "build": "node build-standalone.mjs"
+    "build": "node build-standalone.mjs",
+    "build:vercel": "node build-vercel.mjs"
   },
   "engines": {
-    "node": ">=22"
+    "node": "22.x"
   },
   "veildrop": {
     "role": "decoder"

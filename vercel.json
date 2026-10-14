@@ -1,0 +1,43 @@
+{
+  "framework": null,
+  "buildCommand": "npm run build:vercel",
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "/api/handler?route=:path*"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, max-age=0"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "no-referrer"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        }
+      ]
+    },
+    {
+      "source": "/offline.html",
+      "headers": [
+        {
+          "key": "Content-Disposition",
+          "value": "attachment; filename=VeilDrop-Decoder-Offline.html"
+        }
+      ]
+    }
+  ]
+}
